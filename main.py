@@ -47,6 +47,7 @@ class TianyiYinlvApp:
         self.songs_dir = get_songs_dir()
         self.library = SongLibrary(self.songs_dir)
         self.songs = []
+        self.song_display_values = []
 
         self.player = None
         self.listener = None
@@ -169,6 +170,7 @@ class TianyiYinlvApp:
             takefocus=False,
         )
         self.song_combo.pack(side="left", fill="x", expand=True)
+        self.song_combo.bind("<<ComboboxSelected>>", self.on_song_selected, add="+")
 
         self.refresh_button = ttk.Button(
             song_row,
@@ -315,15 +317,10 @@ class TianyiYinlvApp:
         """
         禁止键盘操控 Tkinter 界面。
 
-        目的：
-        - 空格/回车不会触发按钮
-        - 上下左右不会切换下拉框或单选框
-        - Tab 不会在控件之间移动焦点
-        - 键盘只作为全局演奏触发器使用
-
-        注意：
-        - 这里只阻止 Tkinter UI 自己响应键盘。
-        - pynput 的全局键盘监听仍然可以收到按键，用来播放音乐。
+        修复说明：
+        上一版为了清除焦点，绑定了全局鼠标点击后 root.focus_set。
+        这个动作会干扰 Combobox 的鼠标选择，导致选完歌曲后又回到第一首。
+        本版已经移除那个全局鼠标焦点绑定，只保留键盘事件拦截。
         """
 
         def block_key_event(event):
@@ -348,13 +345,11 @@ class TianyiYinlvApp:
         )
 
         def apply_to_widget(widget):
-            # 禁止通过 Tab 聚焦
             try:
                 widget.configure(takefocus=False)
             except tk.TclError:
                 pass
 
-            # 将自定义绑定放到最前面，优先截断按键事件。
             try:
                 tags = widget.bindtags()
                 custom_tag = "NoKeyboardControl"
@@ -367,47 +362,59 @@ class TianyiYinlvApp:
             for child in widget.winfo_children():
                 apply_to_widget(child)
 
-        # 自定义绑定标签，位于每个控件 bindtags 的最前面。
-        # 这样能在 Button/Combobox/Radiobutton 的默认键盘行为之前拦截。
         for seq in keyboard_sequences:
             self.root.bind_class("NoKeyboardControl", seq, block_key_event, add=False)
 
         apply_to_widget(self.root)
 
-        # 鼠标点到空白处时，把焦点收回 root，进一步避免控件获得键盘焦点。
-        self.root.bind_all("<Button-1>", self._clear_focus_after_mouse_click, add="+")
-
-    def _clear_focus_after_mouse_click(self, event):
-        # 让鼠标操作仍然生效，所以用 after_idle 等点击动作处理完，再清掉焦点。
-        self.root.after_idle(self.root.focus_set)
-
     def refresh_songs(self):
+        previous_value = self.selected_song_var.get()
+
         self.library = SongLibrary(self.songs_dir)
         self.library.load_all()
         self.songs = self.library.list_songs()
 
-        values = [f"{song.title}  ({song.file_path.name})" for song in self.songs]
-        self.song_combo["values"] = values
+        self.song_display_values = [f"{song.title}  ({song.file_path.name})" for song in self.songs]
+        self.song_combo["values"] = self.song_display_values
 
-        if values:
-            if self.selected_song_var.get() not in values:
-                self.selected_song_var.set(values[0])
-            self.status_var.set(f"已找到 {len(values)} 首歌曲。请选择歌曲和模式，然后点击开始。")
+        if self.song_display_values:
+            if previous_value in self.song_display_values:
+                new_index = self.song_display_values.index(previous_value)
+            else:
+                new_index = 0
+
+            self.song_combo.current(new_index)
+            self.selected_song_var.set(self.song_display_values[new_index])
+            self.status_var.set(f"已找到 {len(self.song_display_values)} 首歌曲。当前选择：{self.songs[new_index].title}")
         else:
             self.selected_song_var.set("")
+            self.song_combo.set("")
             self.status_var.set("没有找到 .jianpu 歌曲文件。请把歌曲放进 songs 文件夹。")
 
         self.path_var.set(f"歌曲目录：{self.songs_dir}")
 
-    def get_selected_song(self):
-        selected = self.selected_song_var.get()
+    def on_song_selected(self, event=None):
+        song = self.get_selected_song()
+        if song is not None:
+            self.status_var.set(f"已选择歌曲：{song.title}")
 
-        if not selected:
+    def get_selected_song(self):
+        """
+        修复版：
+        优先用 combobox.current() 获取当前索引，避免文本匹配失效。
+        """
+        if not self.songs:
             return None
 
-        for song in self.songs:
-            if selected == f"{song.title}  ({song.file_path.name})":
-                return song
+        index = self.song_combo.current()
+
+        if 0 <= index < len(self.songs):
+            return self.songs[index]
+
+        selected = self.selected_song_var.get()
+        for i, value in enumerate(self.song_display_values):
+            if selected == value and i < len(self.songs):
+                return self.songs[i]
 
         return None
 
@@ -443,9 +450,6 @@ class TianyiYinlvApp:
         mode_text = "完整音模式" if self.mode_var.get() == "locked" else "即时演奏模式"
         self.status_var.set(f"正在监听键盘：{song.title}｜{mode_text}")
 
-        # 开始后也把焦点收回 root，避免按钮残留焦点。
-        self.root.focus_set()
-
     def stop(self, silent=False):
         if self.listener is not None:
             try:
@@ -465,8 +469,6 @@ class TianyiYinlvApp:
         if not silent:
             self.status_var.set("已停止监听。")
 
-        self.root.focus_set()
-
     def toggle_pause(self):
         if self.player is None:
             self.status_var.set("还没有开始演奏。")
@@ -478,8 +480,6 @@ class TianyiYinlvApp:
         else:
             self.status_var.set("已继续监听键盘。")
 
-        self.root.focus_set()
-
     def reset(self):
         if self.player is None:
             self.status_var.set("还没有开始演奏。")
@@ -487,7 +487,6 @@ class TianyiYinlvApp:
 
         self.player.reset()
         self.status_var.set("已回到歌曲开头。")
-        self.root.focus_set()
 
     def _listener_toggle_pause(self):
         self.root.after(0, self.toggle_pause)
@@ -504,7 +503,6 @@ class TianyiYinlvApp:
         self.is_listening = False
         self.listener = None
         self.status_var.set("已按 Esc 停止监听。")
-        self.root.focus_set()
 
     def on_close(self):
         self.stop(silent=True)
