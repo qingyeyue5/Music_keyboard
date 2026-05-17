@@ -1,0 +1,210 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>键盘弹歌播放器</title>
+  <style>
+    :root { font-family: "Segoe UI", "Microsoft YaHei", sans-serif; }
+    body { max-width: 860px; margin: 24px auto; padding: 0 16px; background: #f5f7fb; color: #1f2937; }
+    .card { background: #fff; border-radius: 12px; box-shadow: 0 8px 24px rgba(0,0,0,.08); padding: 20px; }
+    h1 { margin-top: 0; }
+    .row { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; margin-bottom: 14px; }
+    button, input[type="file"] { font-size: 14px; }
+    button { border: none; border-radius: 8px; padding: 8px 12px; background: #2563eb; color: #fff; cursor: pointer; }
+    button:disabled { opacity: .4; cursor: not-allowed; }
+    .secondary { background: #475569; }
+    .danger { background: #dc2626; }
+    .meter { height: 16px; background: #e2e8f0; border-radius: 999px; overflow: hidden; }
+    .fill { height: 100%; width: 0%; background: linear-gradient(90deg, #06b6d4, #3b82f6); transition: width .08s linear; }
+    .label { font-size: 13px; color: #475569; }
+    #status { min-height: 24px; font-size: 14px; }
+    kbd { background: #eef2ff; padding: 2px 6px; border-radius: 4px; border: 1px solid #c7d2fe; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>🎹 键盘弹歌播放器（Windows 浏览器版）</h1>
+    <p>上传 MP3 后，按任意键都会“弹奏”下一小段音频，逐步敲完整首歌。</p>
+
+    <div class="row">
+      <input id="fileInput" type="file" accept="audio/mpeg,.mp3" />
+      <button id="pauseBtn" class="secondary" disabled>暂停</button>
+      <button id="resumeBtn" class="secondary" disabled>继续</button>
+      <button id="restartBtn" class="danger" disabled>重播</button>
+    </div>
+
+    <div class="row">
+      <span>音量</span>
+      <button id="volDownBtn" class="secondary" disabled>-</button>
+      <span id="volLabel">100%</span>
+      <button id="volUpBtn" class="secondary" disabled>+</button>
+    </div>
+
+    <div class="row">
+      <span>音调</span>
+      <button id="pitchDownBtn" class="secondary" disabled>-</button>
+      <span id="pitchLabel">0 半音</span>
+      <button id="pitchUpBtn" class="secondary" disabled>+</button>
+    </div>
+
+    <div class="row">
+      <div style="flex:1;">
+        <div class="label" id="progressText">进度：00:00 / 00:00（0%）</div>
+        <div class="meter"><div id="progressFill" class="fill"></div></div>
+      </div>
+    </div>
+
+    <div id="status">请先上传 MP3 文件。</div>
+    <p class="label">提示：上传后先按一次键盘任意键激活音频。然后每按一次 <kbd>任意键</kbd>，就播放下一小段。</p>
+  </div>
+
+  <script>
+    const fileInput = document.getElementById('fileInput');
+    const pauseBtn = document.getElementById('pauseBtn');
+    const resumeBtn = document.getElementById('resumeBtn');
+    const restartBtn = document.getElementById('restartBtn');
+    const volDownBtn = document.getElementById('volDownBtn');
+    const volUpBtn = document.getElementById('volUpBtn');
+    const pitchDownBtn = document.getElementById('pitchDownBtn');
+    const pitchUpBtn = document.getElementById('pitchUpBtn');
+    const statusEl = document.getElementById('status');
+    const progressFill = document.getElementById('progressFill');
+    const progressText = document.getElementById('progressText');
+    const volLabel = document.getElementById('volLabel');
+    const pitchLabel = document.getElementById('pitchLabel');
+
+    const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    const gainNode = audioCtx.createGain();
+    gainNode.connect(audioCtx.destination);
+
+    let buffer = null;
+    let cursor = 0;
+    let stepDuration = 0.25;
+    let isPaused = false;
+    let volume = 1;
+    let semitones = 0;
+    let activeSources = new Set();
+
+    function enableControls(enabled) {
+      [pauseBtn, resumeBtn, restartBtn, volDownBtn, volUpBtn, pitchDownBtn, pitchUpBtn].forEach(btn => btn.disabled = !enabled);
+      resumeBtn.disabled = true;
+    }
+
+    function formatTime(sec) {
+      const m = Math.floor(sec / 60).toString().padStart(2, '0');
+      const s = Math.floor(sec % 60).toString().padStart(2, '0');
+      return `${m}:${s}`;
+    }
+
+    function updateProgress() {
+      if (!buffer) return;
+      const total = buffer.duration;
+      const percent = Math.min(100, (cursor / total) * 100);
+      progressFill.style.width = `${percent}%`;
+      progressText.textContent = `进度：${formatTime(cursor)} / ${formatTime(total)}（${percent.toFixed(1)}%）`;
+      if (cursor >= total) statusEl.textContent = '已弹奏到结尾，可点击“重播”重新开始。';
+    }
+
+    function stopAllSources() {
+      for (const src of activeSources) {
+        try { src.stop(); } catch {}
+      }
+      activeSources.clear();
+    }
+
+    function playNextSlice() {
+      if (!buffer || isPaused) return;
+      if (cursor >= buffer.duration) return;
+
+      const source = audioCtx.createBufferSource();
+      source.buffer = buffer;
+      source.playbackRate.value = Math.pow(2, semitones / 12);
+      source.connect(gainNode);
+
+      const remaining = buffer.duration - cursor;
+      const duration = Math.min(stepDuration, remaining);
+      source.start(0, cursor, duration);
+      activeSources.add(source);
+      source.onended = () => activeSources.delete(source);
+
+      cursor += duration;
+      updateProgress();
+    }
+
+    function setVolume(v) {
+      volume = Math.max(0, Math.min(2, v));
+      gainNode.gain.value = volume;
+      volLabel.textContent = `${Math.round(volume * 100)}%`;
+    }
+
+    function setSemitones(n) {
+      semitones = Math.max(-12, Math.min(12, n));
+      const sign = semitones > 0 ? '+' : '';
+      pitchLabel.textContent = `${sign}${semitones} 半音`;
+    }
+
+    fileInput.addEventListener('change', async (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+      statusEl.textContent = '正在解析 MP3...';
+      try {
+        const arr = await file.arrayBuffer();
+        buffer = await audioCtx.decodeAudioData(arr);
+        cursor = 0;
+        stepDuration = Math.max(0.08, Math.min(0.3, buffer.duration / 220));
+        isPaused = false;
+        setVolume(1);
+        setSemitones(0);
+        updateProgress();
+        enableControls(true);
+        statusEl.textContent = `已加载：${file.name}。按键盘任意键开始“弹奏”。`;
+      } catch (err) {
+        console.error(err);
+        statusEl.textContent = '解析失败，请确认是有效 MP3 文件。';
+      }
+    });
+
+    window.addEventListener('keydown', async () => {
+      if (!buffer || isPaused) return;
+      if (audioCtx.state !== 'running') await audioCtx.resume();
+      playNextSlice();
+    });
+
+    pauseBtn.addEventListener('click', () => {
+      isPaused = true;
+      stopAllSources();
+      pauseBtn.disabled = true;
+      resumeBtn.disabled = false;
+      statusEl.textContent = '已暂停。';
+    });
+
+    resumeBtn.addEventListener('click', async () => {
+      if (!buffer) return;
+      if (audioCtx.state !== 'running') await audioCtx.resume();
+      isPaused = false;
+      pauseBtn.disabled = false;
+      resumeBtn.disabled = true;
+      statusEl.textContent = '已继续，按任意键继续弹奏。';
+    });
+
+    restartBtn.addEventListener('click', () => {
+      if (!buffer) return;
+      stopAllSources();
+      cursor = 0;
+      isPaused = false;
+      pauseBtn.disabled = false;
+      resumeBtn.disabled = true;
+      updateProgress();
+      statusEl.textContent = '已重播，从开头开始。按任意键继续弹奏。';
+    });
+
+    volUpBtn.addEventListener('click', () => setVolume(volume + 0.1));
+    volDownBtn.addEventListener('click', () => setVolume(volume - 0.1));
+    pitchUpBtn.addEventListener('click', () => setSemitones(semitones + 1));
+    pitchDownBtn.addEventListener('click', () => setSemitones(semitones - 1));
+
+    updateProgress();
+  </script>
+</body>
+</html>
