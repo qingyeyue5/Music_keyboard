@@ -59,6 +59,7 @@ class TianyiYinlvApp:
 
         self._setup_style()
         self._build_ui()
+        self._disable_ui_keyboard_control()
         self.refresh_songs()
 
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
@@ -165,12 +166,18 @@ class TianyiYinlvApp:
             textvariable=self.selected_song_var,
             state="readonly",
             width=52,
+            takefocus=False,
         )
         self.song_combo.pack(side="left", fill="x", expand=True)
 
-        ttk.Button(song_row, text="刷新歌曲", style="Soft.TButton", command=self.refresh_songs).pack(
-            side="left", padx=(12, 0)
+        self.refresh_button = ttk.Button(
+            song_row,
+            text="刷新歌曲",
+            style="Soft.TButton",
+            command=self.refresh_songs,
+            takefocus=False,
         )
+        self.refresh_button.pack(side="left", padx=(12, 0))
 
         mode_card = self._card(main)
         mode_card.pack(fill="x", pady=(0, 14))
@@ -186,19 +193,23 @@ class TianyiYinlvApp:
         mode_row = tk.Frame(mode_card, bg=CARD)
         mode_row.pack(fill="x", padx=18, pady=(0, 16))
 
-        ttk.Radiobutton(
+        self.locked_radio = ttk.Radiobutton(
             mode_row,
             text="完整音模式：音没播完时忽略其他按键",
             variable=self.mode_var,
             value="locked",
-        ).pack(anchor="w", pady=4)
+            takefocus=False,
+        )
+        self.locked_radio.pack(anchor="w", pady=4)
 
-        ttk.Radiobutton(
+        self.instant_radio = ttk.Radiobutton(
             mode_row,
             text="即时演奏模式：每次新按键立刻触发下一个音",
             variable=self.mode_var,
             value="instant",
-        ).pack(anchor="w", pady=4)
+            takefocus=False,
+        )
+        self.instant_radio.pack(anchor="w", pady=4)
 
         control_card = self._card(main)
         control_card.pack(fill="x", pady=(0, 14))
@@ -206,16 +217,40 @@ class TianyiYinlvApp:
         button_row = tk.Frame(control_card, bg=CARD)
         button_row.pack(fill="x", padx=18, pady=18)
 
-        self.start_button = ttk.Button(button_row, text="开始演奏", style="Primary.TButton", command=self.start)
+        self.start_button = ttk.Button(
+            button_row,
+            text="开始演奏",
+            style="Primary.TButton",
+            command=self.start,
+            takefocus=False,
+        )
         self.start_button.pack(side="left", padx=(0, 10))
 
-        self.pause_button = ttk.Button(button_row, text="暂停 / 继续", style="Soft.TButton", command=self.toggle_pause)
+        self.pause_button = ttk.Button(
+            button_row,
+            text="暂停 / 继续",
+            style="Soft.TButton",
+            command=self.toggle_pause,
+            takefocus=False,
+        )
         self.pause_button.pack(side="left", padx=(0, 10))
 
-        self.reset_button = ttk.Button(button_row, text="回到开头", style="Soft.TButton", command=self.reset)
+        self.reset_button = ttk.Button(
+            button_row,
+            text="回到开头",
+            style="Soft.TButton",
+            command=self.reset,
+            takefocus=False,
+        )
         self.reset_button.pack(side="left", padx=(0, 10))
 
-        self.stop_button = ttk.Button(button_row, text="停止监听", style="Soft.TButton", command=self.stop)
+        self.stop_button = ttk.Button(
+            button_row,
+            text="停止监听",
+            style="Soft.TButton",
+            command=self.stop,
+            takefocus=False,
+        )
         self.stop_button.pack(side="left")
 
         status_card = self._card(main)
@@ -252,7 +287,8 @@ class TianyiYinlvApp:
         self.path_label.pack(fill="x", padx=18, pady=(0, 16))
 
         tips = (
-            "快捷键：按任意键播放下一音；F8 暂停/继续；F9 回到开头；Esc 停止监听。\n"
+            "界面只允许鼠标操作：键盘不会切换歌曲、模式或按钮。\n"
+            "开始监听后：按任意键播放下一音；F8 暂停/继续；F9 回到开头；Esc 停止监听。\n"
             "两个模式都已处理长按：一直按住同一个键，只会识别第一次。"
         )
 
@@ -267,12 +303,6 @@ class TianyiYinlvApp:
         ).pack(fill="x", padx=18, pady=(0, 16))
 
     def _card(self, parent):
-        """
-        修复版：
-        之前这里创建了 outer 和 inner，但返回了 inner，导致 outer 没有被 pack，
-        所以歌曲选择、模式按钮等控件不会显示。
-        现在直接返回一个真正挂在 parent 下面的卡片。
-        """
         return tk.Frame(
             parent,
             bg=CARD,
@@ -280,6 +310,76 @@ class TianyiYinlvApp:
             highlightbackground="#D9F3FF",
             highlightcolor="#D9F3FF",
         )
+
+    def _disable_ui_keyboard_control(self):
+        """
+        禁止键盘操控 Tkinter 界面。
+
+        目的：
+        - 空格/回车不会触发按钮
+        - 上下左右不会切换下拉框或单选框
+        - Tab 不会在控件之间移动焦点
+        - 键盘只作为全局演奏触发器使用
+
+        注意：
+        - 这里只阻止 Tkinter UI 自己响应键盘。
+        - pynput 的全局键盘监听仍然可以收到按键，用来播放音乐。
+        """
+
+        def block_key_event(event):
+            return "break"
+
+        keyboard_sequences = (
+            "<KeyPress>",
+            "<KeyRelease>",
+            "<Return>",
+            "<KP_Enter>",
+            "<space>",
+            "<Tab>",
+            "<ISO_Left_Tab>",
+            "<Up>",
+            "<Down>",
+            "<Left>",
+            "<Right>",
+            "<Prior>",
+            "<Next>",
+            "<Home>",
+            "<End>",
+        )
+
+        def apply_to_widget(widget):
+            # 禁止通过 Tab 聚焦
+            try:
+                widget.configure(takefocus=False)
+            except tk.TclError:
+                pass
+
+            # 将自定义绑定放到最前面，优先截断按键事件。
+            try:
+                tags = widget.bindtags()
+                custom_tag = "NoKeyboardControl"
+
+                if custom_tag not in tags:
+                    widget.bindtags((custom_tag,) + tags)
+            except tk.TclError:
+                pass
+
+            for child in widget.winfo_children():
+                apply_to_widget(child)
+
+        # 自定义绑定标签，位于每个控件 bindtags 的最前面。
+        # 这样能在 Button/Combobox/Radiobutton 的默认键盘行为之前拦截。
+        for seq in keyboard_sequences:
+            self.root.bind_class("NoKeyboardControl", seq, block_key_event, add=False)
+
+        apply_to_widget(self.root)
+
+        # 鼠标点到空白处时，把焦点收回 root，进一步避免控件获得键盘焦点。
+        self.root.bind_all("<Button-1>", self._clear_focus_after_mouse_click, add="+")
+
+    def _clear_focus_after_mouse_click(self, event):
+        # 让鼠标操作仍然生效，所以用 after_idle 等点击动作处理完，再清掉焦点。
+        self.root.after_idle(self.root.focus_set)
 
     def refresh_songs(self):
         self.library = SongLibrary(self.songs_dir)
@@ -343,6 +443,9 @@ class TianyiYinlvApp:
         mode_text = "完整音模式" if self.mode_var.get() == "locked" else "即时演奏模式"
         self.status_var.set(f"正在监听键盘：{song.title}｜{mode_text}")
 
+        # 开始后也把焦点收回 root，避免按钮残留焦点。
+        self.root.focus_set()
+
     def stop(self, silent=False):
         if self.listener is not None:
             try:
@@ -362,6 +465,8 @@ class TianyiYinlvApp:
         if not silent:
             self.status_var.set("已停止监听。")
 
+        self.root.focus_set()
+
     def toggle_pause(self):
         if self.player is None:
             self.status_var.set("还没有开始演奏。")
@@ -373,6 +478,8 @@ class TianyiYinlvApp:
         else:
             self.status_var.set("已继续监听键盘。")
 
+        self.root.focus_set()
+
     def reset(self):
         if self.player is None:
             self.status_var.set("还没有开始演奏。")
@@ -380,6 +487,7 @@ class TianyiYinlvApp:
 
         self.player.reset()
         self.status_var.set("已回到歌曲开头。")
+        self.root.focus_set()
 
     def _listener_toggle_pause(self):
         self.root.after(0, self.toggle_pause)
@@ -396,6 +504,7 @@ class TianyiYinlvApp:
         self.is_listening = False
         self.listener = None
         self.status_var.set("已按 Esc 停止监听。")
+        self.root.focus_set()
 
     def on_close(self):
         self.stop(silent=True)

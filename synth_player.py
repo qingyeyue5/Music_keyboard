@@ -18,6 +18,10 @@ class BaseSongPlayer:
     子类：
     - LockedStepPlayer：完整音模式
     - InstantStepPlayer：即时演奏模式
+
+    本版新增：
+    - 按键触发时自动跳过休止符、0 时值音符、异常空音符。
+    - 这样不会出现“按了一次键但没有声音”的情况。
     """
 
     def __init__(self):
@@ -74,15 +78,44 @@ class BaseSongPlayer:
 
     def _take_next_event(self):
         """
-        从曲谱里取出下一个音符，同时把指针往后移。
+        从曲谱里取出下一个“有声音”的音符，同时把指针往后移。
+
+        关键修复：
+        - event.midi is None 表示休止符，跳过。
+        - event.beats <= 0 表示 0 时值或异常时值，跳过。
+        - 最多扫描整首歌一圈，避免全是休止符时死循环。
         """
         if self.song is None or not self.song.notes:
             return None, None
 
-        event = self.song.notes[self.index]
-        bpm = self.song.bpm
-        self.index = (self.index + 1) % len(self.song.notes)
-        return event, bpm
+        total = len(self.song.notes)
+
+        for _ in range(total):
+            event = self.song.notes[self.index]
+            bpm = self.song.bpm
+            self.index = (self.index + 1) % total
+
+            if self._is_audible_event(event):
+                return event, bpm
+
+        # 整首歌都没有可播放音符
+        return None, None
+
+    @staticmethod
+    def _is_audible_event(event: NoteEvent) -> bool:
+        if event is None:
+            return False
+
+        if event.midi is None:
+            return False
+
+        if event.beats is None:
+            return False
+
+        if event.beats <= 0:
+            return False
+
+        return True
 
     def _get_sound(self, event: NoteEvent, bpm: int):
         cache_key = (event.midi, event.beats, bpm)
@@ -99,11 +132,6 @@ class BaseSongPlayer:
         # 完整音模式会用这个长度做锁定。
         # 即时演奏模式不会等待这个长度，但声音本身仍自然播放完。
         duration = max(0.04, event.beats * beat_seconds * 0.85)
-
-        if event.midi is None:
-            audio = np.zeros(int(SAMPLE_RATE * duration), dtype=np.int16)
-            audio = match_mixer_channels(audio)
-            return pygame.sndarray.make_sound(audio)
 
         freq = midi_to_freq(event.midi)
 
@@ -135,7 +163,7 @@ class LockedStepPlayer(BaseSongPlayer):
     版本一：完整音模式。
 
     规则：
-    - 按一次键，播放曲谱里的下一个音。
+    - 按一次键，播放曲谱里的下一个有声音的音。
     - 当前音完整播放期间，其他按键全部无效。
     - 当前音一结束，下一次按键立刻有效。
     """
@@ -179,7 +207,7 @@ class LockedStepPlayer(BaseSongPlayer):
             # 用真实 sound 长度判断什么时候允许下一次触发。
             self.busy_until = now + sound.get_length()
 
-        sound.play()
+        play_sound_on_free_channel(sound, force=False)
 
 
 class InstantStepPlayer(BaseSongPlayer):
@@ -187,9 +215,10 @@ class InstantStepPlayer(BaseSongPlayer):
     版本二：即时演奏模式。
 
     规则：
-    - 每次新按键，立刻播放曲谱里的下一个音。
+    - 每次新按键，立刻播放曲谱里的下一个有声音的音。
     - 不等待上一个音结束。
     - 多个音可以自然重叠，手感更像弹钢琴。
+    - 如果通道已满，会强制找一个通道播放，保证本次按键立刻出声。
     - 长按同一个键导致的系统自动连发由 keyboard_listener.py 过滤。
     """
 
@@ -204,7 +233,7 @@ class InstantStepPlayer(BaseSongPlayer):
 
             sound = self._get_sound(event, bpm)
 
-        sound.play()
+        play_sound_on_free_channel(sound, force=True)
 
 
 def init_mixer_once():
@@ -233,7 +262,32 @@ def init_mixer_once():
         allowedchanges=0,
     )
 
+    # 默认通道数较少，快速连续按键时可能占满。
+    # 增加通道后，即时演奏模式可以更稳定地重叠播放。
+    pygame.mixer.set_num_channels(64)
+
     print("当前 pygame mixer 音频格式：", pygame.mixer.get_init())
+    print("当前 pygame mixer 通道数量：", pygame.mixer.get_num_channels())
+
+
+def play_sound_on_free_channel(sound: pygame.mixer.Sound, force: bool = False):
+    """
+    在空闲通道上播放声音。
+
+    force=False:
+        没有空闲通道时，pygame 可能不播放新声音。
+        适合完整音模式。
+
+    force=True:
+        没有空闲通道时，也强制找一个通道播放。
+        适合即时演奏模式，保证新按键立刻出声。
+    """
+    channel = pygame.mixer.find_channel(force=force)
+
+    if channel is not None:
+        channel.play(sound)
+    else:
+        sound.play()
 
 
 def match_mixer_channels(audio: np.ndarray) -> np.ndarray:
