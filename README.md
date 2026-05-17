@@ -31,7 +31,7 @@ TianyiYinlv/
 └─ build_gui_exe.bat
 ```
 
-本仓库不上传 `songs/` 文件夹。歌曲文件由用户自己放在程序旁边：
+由于版权原因，本仓库不上传 `songs/` 文件夹。歌曲文件由用户自己放在程序旁边：
 
 ```text
 TianyiYinlv.exe
