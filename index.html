@@ -60,6 +60,13 @@
   </div>
 
   <script>
+
+    // 某些预览环境可能把 body 内容渲染两次，这里做去重保护，确保只显示一个界面。
+    const cards = document.querySelectorAll('.card');
+    cards.forEach((card, index) => {
+      if (index > 0) card.remove();
+    });
+
     const fileInput = document.getElementById('fileInput');
     const pauseBtn = document.getElementById('pauseBtn');
     const resumeBtn = document.getElementById('resumeBtn');
